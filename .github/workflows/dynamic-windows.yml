@@ -40,31 +40,18 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Configure Windows app
+      - name: Write app settings
         shell: pwsh
         run: |
           $cfg = @{ AppName = $env:APP_NAME; StartUrl = $env:APP_URL } | ConvertTo-Json
           Set-Content -Path windows/appsettings.json -Value $cfg -Encoding UTF8
-          if ($env:ICON_URL) {
-            python -m pip install --quiet pillow
-            @'
-import os, urllib.parse, urllib.request
-from PIL import Image
-u=os.environ.get('ICON_URL','').strip()
-if u:
-    p=urllib.parse.urlsplit(u)
-    path=urllib.parse.quote(urllib.parse.unquote(p.path), safe='/:%@!$&\'()*+,;=-._~')
-    q=urllib.parse.quote(urllib.parse.unquote(p.query), safe='=&?/:;%+,-._~')
-    enc=urllib.parse.urlunsplit((p.scheme,p.netloc,path,q,p.fragment))
-    req=urllib.request.Request(enc,headers={'User-Agent':'WebToAPKBuilder/3.0'})
-    with urllib.request.urlopen(req,timeout=30) as r, open('windows/app-icon','wb') as f: f.write(r.read())
-    img=Image.open('windows/app-icon').convert('RGBA')
-    side=min(img.size); left=(img.width-side)//2; top=(img.height-side)//2
-    img=img.crop((left,top,left+side,top+side)).resize((256,256))
-    img.save('windows/app.ico',format='ICO',sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
-'@ | Set-Content windows/make_icon.py -Encoding UTF8
-            python windows/make_icon.py
-          }
+
+      - name: Build custom icon
+        if: ${{ env.ICON_URL != '' }}
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pillow
+          python windows/make_icon.py
 
       - name: Publish Windows app
         shell: pwsh
