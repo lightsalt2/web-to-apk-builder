@@ -1,4 +1,4 @@
-import os, re, html, urllib.request
+import os, re, html, urllib.request, urllib.parse
 from pathlib import Path
 
 url = os.environ.get('APP_URL','').strip()
@@ -34,9 +34,16 @@ strings_path.write_text(
     f'    <string name="app_name">{html.escape(app_name)}</string>\n'
     '</resources>\n', encoding='utf-8')
 
-# Optional custom icon.
+# Optional custom icon. Percent-encode Korean/non-ASCII path characters first.
 if icon_url:
-    urllib.request.urlretrieve(icon_url, '/tmp/app-icon')
+    parts = urllib.parse.urlsplit(icon_url)
+    safe_path = urllib.parse.quote(urllib.parse.unquote(parts.path), safe='/:%@!$&\'()*+,;=-._~')
+    safe_query = urllib.parse.quote(urllib.parse.unquote(parts.query), safe='=&?/:;%+,-._~')
+    encoded_icon_url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, safe_path, safe_query, parts.fragment))
+    request = urllib.request.Request(encoded_icon_url, headers={'User-Agent': 'WebToAPKBuilder/2.0'})
+    with urllib.request.urlopen(request, timeout=30) as response, open('/tmp/app-icon', 'wb') as output:
+        output.write(response.read())
+
     from PIL import Image
     img = Image.open('/tmp/app-icon').convert('RGBA')
     side = min(img.size)
