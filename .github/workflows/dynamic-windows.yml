@@ -1,0 +1,96 @@
+name: Dynamic Web to Windows EXE
+
+on:
+  repository_dispatch:
+    types: [build_windows]
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: 'Website URL (https://...)'
+        required: true
+      app_name:
+        description: 'App name'
+        required: true
+      icon_url:
+        description: 'Optional public icon URL'
+        required: false
+      request_id:
+        description: 'Unique request id'
+        required: true
+        default: 'manual'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      APP_URL: ${{ github.event.client_payload.app_url || inputs.app_url }}
+      APP_NAME: ${{ github.event.client_payload.app_name || inputs.app_name }}
+      ICON_URL: ${{ github.event.client_payload.icon_url || inputs.icon_url }}
+      REQUEST_ID: ${{ github.event.client_payload.request_id || inputs.request_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Configure Windows app
+        shell: pwsh
+        run: |
+          $cfg = @{ AppName = $env:APP_NAME; StartUrl = $env:APP_URL } | ConvertTo-Json
+          Set-Content -Path windows/appsettings.json -Value $cfg -Encoding UTF8
+          if ($env:ICON_URL) {
+            python -m pip install --quiet pillow
+            @'
+import os, urllib.parse, urllib.request
+from PIL import Image
+u=os.environ.get('ICON_URL','').strip()
+if u:
+    p=urllib.parse.urlsplit(u)
+    path=urllib.parse.quote(urllib.parse.unquote(p.path), safe='/:%@!$&\'()*+,;=-._~')
+    q=urllib.parse.quote(urllib.parse.unquote(p.query), safe='=&?/:;%+,-._~')
+    enc=urllib.parse.urlunsplit((p.scheme,p.netloc,path,q,p.fragment))
+    req=urllib.request.Request(enc,headers={'User-Agent':'WebToAPKBuilder/3.0'})
+    with urllib.request.urlopen(req,timeout=30) as r, open('windows/app-icon','wb') as f: f.write(r.read())
+    img=Image.open('windows/app-icon').convert('RGBA')
+    side=min(img.size); left=(img.width-side)//2; top=(img.height-side)//2
+    img=img.crop((left,top,left+side,top+side)).resize((256,256))
+    img.save('windows/app.ico',format='ICO',sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
+'@ | Set-Content windows/make_icon.py -Encoding UTF8
+            python windows/make_icon.py
+          }
+
+      - name: Publish Windows app
+        shell: pwsh
+        run: dotnet publish windows/WebToApp.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=false -o publish
+
+      - name: Include settings
+        shell: pwsh
+        run: Copy-Item windows/appsettings.json publish/appsettings.json -Force
+
+      - name: Package ZIP
+        shell: pwsh
+        run: Compress-Archive -Path publish/* -DestinationPath "web-to-windows-$env:REQUEST_ID.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-to-windows-${{ env.REQUEST_ID }}
+          path: web-to-windows-${{ env.REQUEST_ID }}.zip
+          retention-days: 7
+
+      - name: Create downloadable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "windows-$env:REQUEST_ID"
+          gh release delete $tag --yes 2>$null
+          git push origin ":refs/tags/$tag" 2>$null
+          gh release create $tag "web-to-windows-$env:REQUEST_ID.zip" --title "$env:APP_NAME Windows" --notes "자동 생성된 Windows WebView2 앱입니다. 압축 해제 후 WebToApp.exe를 실행하세요."
